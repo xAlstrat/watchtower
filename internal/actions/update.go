@@ -40,7 +40,7 @@ func Update(client container.Client, params types.UpdateParams) error {
 		return err
 	}
 
-	checkDependencies(containers)
+	containers = checkDependencies(containers)
 
 	if params.MonitorOnly {
 		if params.LifecycleHooks {
@@ -60,17 +60,17 @@ func Update(client container.Client, params types.UpdateParams) error {
 
 func stopContainersInReversedOrder(containers []container.Container, client container.Client, params types.UpdateParams) {
 	for i := len(containers) - 1; i >= 0; i-- {
-		stopStaleContainer(containers[i], client, params)
+		stopStaleOrLinkedContainer(containers[i], client, params)
 	}
 }
 
-func stopStaleContainer(container container.Container, client container.Client, params types.UpdateParams) {
+func stopStaleOrLinkedContainer(container container.Container, client container.Client, params types.UpdateParams) {
 	if container.IsWatchtower() {
 		log.Debugf("This is the watchtower container %s", container.Name())
 		return
 	}
 
-	if !container.Stale {
+	if !container.Stale && !container.Linked {
 		return
 	}
 	if params.LifecycleHooks {
@@ -90,11 +90,14 @@ func restartContainersInSortedOrder(containers []container.Container, client con
 	imageIDs := make(map[string]bool)
 
 	for _, container := range containers {
-		if !container.Stale {
+		if !container.Stale && !container.Linked {
 			continue
 		}
-		restartStaleContainer(container, client, params)
-		imageIDs[container.ImageID()] = true
+		restartStaleOrLinkedContainer(container, client, params)
+		if container.Stale {
+			// Image should only be removed for the container with a stale image
+			imageIDs[container.ImageID()] = true
+		}
 	}
 	if params.Cleanup {
 		for imageID := range imageIDs {
@@ -105,7 +108,7 @@ func restartContainersInSortedOrder(containers []container.Container, client con
 	}
 }
 
-func restartStaleContainer(container container.Container, client container.Client, params types.UpdateParams) {
+func restartStaleOrLinkedContainer(container container.Container, client container.Client, params types.UpdateParams) {
 	// Since we can't shutdown a watchtower container immediately, we need to
 	// start the new one while the old one is still running. This prevents us
 	// from re-using the same container name so we first rename the current
@@ -126,7 +129,7 @@ func restartStaleContainer(container container.Container, client container.Clien
 	}
 }
 
-func checkDependencies(containers []container.Container) {
+func checkDependencies(containers []container.Container) ([]container.Container) {
 
 	for i, parent := range containers {
 		if parent.ToRestart() {
@@ -143,4 +146,5 @@ func checkDependencies(containers []container.Container) {
 			}
 		}
 	}
+	return containers
 }
